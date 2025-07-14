@@ -25,6 +25,8 @@ pub enum OllamaError {
     InternalError(InternalOllamaError),
     #[error("{0}")]
     Other(String),
+    #[error("URL Parse error: {0}")]
+    Url(#[from] url::ParseError),
 }
 
 /// Represents an internal error within the Ollama service.

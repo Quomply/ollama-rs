@@ -1,5 +1,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+use error::OllamaError;
 use url::Url;
 
 #[cfg(feature = "macros")]
@@ -160,9 +161,9 @@ impl Ollama {
     ///
     /// # Returns
     ///
-    /// A `Result` containing the new `Ollama` instance or a `url::ParseError`.
+    /// A `Result` containing the new `Ollama` instance or a `OllamaError`.
     #[inline]
-    pub fn try_new(url: impl IntoUrl) -> Result<Self, url::ParseError> {
+    pub fn try_new(url: impl IntoUrl) -> Result<Self, OllamaError> {
         Ok(Self::from_url(url.into_url()?))
     }
 

@@ -80,17 +80,7 @@ impl<C: ChatHistory> Coordinator<C> {
         self
     }
 
-    pub async fn chat(
-        &mut self,
-        messages: Vec<ChatMessage>,
-    ) -> crate::error::Result<ChatMessageResponse> {
-        if self.debug {
-            for m in &messages {
-                eprintln!("Hit {} with:", self.model);
-                eprintln!("\t{:?}: '{}'", m.role, m.content);
-            }
-        }
-
+    fn generate_request(&self, messages: Vec<ChatMessage>) -> ChatMessageRequest {
         let mut request = ChatMessageRequest::new(self.model.clone(), messages)
             .options(self.options.clone())
             .tools(self.tool_infos.clone());
@@ -112,6 +102,22 @@ impl<C: ChatHistory> Coordinator<C> {
                 }
             }
         }
+
+        request
+    }
+
+    pub async fn chat(
+        &mut self,
+        messages: Vec<ChatMessage>,
+    ) -> crate::error::Result<ChatMessageResponse> {
+        if self.debug {
+            for m in &messages {
+                eprintln!("Hit {} with:", self.model);
+                eprintln!("\t{:?}: '{}'", m.role, m.content);
+            }
+        }
+
+        let request = self.generate_request(messages);
 
         let resp = self
             .ollama
@@ -151,6 +157,97 @@ impl<C: ChatHistory> Coordinator<C> {
             }
 
             Ok(resp)
+        }
+    }
+}
+
+#[cfg(feature = "stream")]
+pub mod chat_stream {
+    use crate::coordinator::Coordinator;
+    use crate::generation::chat::ChatMessage;
+    use crate::generation::chat::ChatMessageResponse;
+    use crate::history::ChatHistory;
+    use crate::OllamaError;
+    use std::fmt::Debug;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    pub type ChatStream = std::pin::Pin<
+        Box<dyn tokio_stream::Stream<Item = Result<ChatMessageResponse, OllamaError>> + Send>,
+    >;
+
+    impl<C: ChatHistory + Default + Clone + Debug + Send + 'static> Coordinator<C> {
+        pub async fn chat_stream(
+            mut self,
+            messages: Vec<ChatMessage>,
+        ) -> crate::error::Result<ChatStream> {
+            use async_stream::try_stream;
+            use tokio_stream::StreamExt;
+
+            if self.debug {
+                for m in &messages {
+                    eprintln!("Hit {} with:", self.model);
+                    eprintln!("\t{:?}: '{}'", m.role, m.content);
+                }
+            }
+
+            let request = self.generate_request(messages);
+
+            let history = Arc::new(Mutex::new(self.history.clone()));
+            let mut resp = Some(
+                self.ollama
+                    .send_chat_messages_with_history_stream_tokio(history.clone(), request)
+                    .await?,
+            );
+
+            let s = try_stream! {
+                while let Some(mut stream) = resp.take() {
+                    let mut tool_calls = vec![];
+                    while let Some(i) = stream.next().await {
+                        if let Ok(i) = i.as_ref() {
+                            tool_calls.extend_from_slice(&i.message.tool_calls);
+                        }
+                        yield i.unwrap();
+                    }
+
+                    let keep_going = !tool_calls.is_empty();
+                    for call in tool_calls {
+                        if self.debug {
+                            eprintln!("Tool call: {:?}", call.function); // TODO: Use log crate?
+                        }
+
+                        let mut tool = {
+                            let Some(tool) = self.tools.remove(call.function.name.as_str()) else {
+                                //yield crate::error::Result::Err(crate::error::ToolCallError::UnknownToolName.into());
+                                panic!();
+                            };
+                            tool
+                        };
+
+                        let resp = tool
+                            .call(call.function.arguments)
+                            .await.unwrap();
+                        //.map_err(|x| crate::error::OllamaError::from(crate::error::ToolCallError::InternalToolError(x)))?;
+
+                        if self.debug {
+                            eprintln!("Tool response: {}", &resp);
+                        }
+
+                        history.lock().await.push(ChatMessage::tool(resp))
+                    }
+
+                    if keep_going {
+                        let request = self.generate_request(Vec::new());
+                        resp = Some(
+                            self.ollama
+                                .send_chat_messages_with_history_stream_tokio(history.clone(), request)
+                                .await?,
+                        );
+                    }
+                }
+            };
+
+            Ok(Box::pin(s))
         }
     }
 }

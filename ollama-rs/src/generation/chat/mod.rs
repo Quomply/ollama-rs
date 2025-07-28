@@ -184,6 +184,49 @@ impl Ollama {
         Ok(Box::pin(s))
     }
 
+    #[cfg_attr(docsrs, doc(cfg(feature = "stream")))]
+    #[cfg(feature = "stream")]
+    pub async fn send_chat_messages_with_history_stream_tokio<C: ChatHistory + Send + 'static>(
+        &self,
+        history: Arc<tokio::sync::Mutex<C>>,
+        mut request: ChatMessageRequest,
+    ) -> crate::error::Result<ChatMessageResponseStream> {
+        use async_stream::stream;
+        use tokio_stream::StreamExt;
+
+        // The request is modified to include the current chat messages
+        {
+            let mut hist = history.lock().await;
+            for m in request.messages {
+                hist.push(m);
+            }
+        }
+
+        request.messages = history.lock().await.messages().to_vec();
+        request.stream = true;
+
+        let mut resp_stream: ChatMessageResponseStream =
+            self.send_chat_messages_stream(request.clone()).await?;
+
+        let s = stream! {
+            let mut result = String::new();
+
+            while let Some(item) = resp_stream.try_next().await.unwrap() {
+                let msg_part = item.clone().message.content;
+
+                if item.done {
+                    history.lock().await.push(ChatMessage::assistant(result.clone()));
+                } else {
+                    result.push_str(&msg_part);
+                }
+
+                yield Ok(item);
+            }
+        };
+
+        Ok(Box::pin(s))
+    }
+
     /// Chat message generation
     /// Returns a `ChatMessageResponse` object
     pub async fn send_chat_messages_with_history<C: ChatHistory>(

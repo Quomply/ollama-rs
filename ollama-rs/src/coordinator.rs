@@ -216,12 +216,9 @@ pub mod chat_stream {
                             eprintln!("Tool call: {:?}", call.function); // TODO: Use log crate?
                         }
 
-                        let mut tool = {
-                            let Some(tool) = self.tools.remove(call.function.name.as_str()) else {
-                                //yield crate::error::Result::Err(crate::error::ToolCallError::UnknownToolName.into());
-                                panic!();
-                            };
-                            tool
+                        let Some(tool) = self.tools.get_mut(call.function.name.as_str()) else {
+                            //yield crate::error::Result::Err(crate::error::ToolCallError::UnknownToolName.into());
+                            panic!();
                         };
 
                         let resp = tool
